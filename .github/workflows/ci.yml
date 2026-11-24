@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+        python: ['3.9', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install Chromium for the extension fixture
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - run: npm run test:unit
+      - run: npm run test:python
+      - run: npm run test:e2e
+        env:
+          # The unpacked-extension fixture needs a real Chromium, not headless shell.
+          CHROME_CHANNEL: chromium
+
+  package:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node scripts/package.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sshpad
+          path: dist/*.zip
+      - name: Check the manifest version matches package.json
+        run: |
+          node -e "
+          const manifest = require('./extension/manifest.json');
+          const pkg = require('./package.json');
+          if (!pkg.version) { console.log('package.json has no version to compare'); process.exit(0); }
+          if (manifest.version !== pkg.version) {
+            console.error('manifest ' + manifest.version + ' != package.json ' + pkg.version);
+            process.exit(1);
+          }
+          "

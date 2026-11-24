@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<div id="app"><input id="terminal-input" aria-label="Substitute terminal input"></div>
+<script>
+  const id = new URLSearchParams(location.search).get('fixture');
+  window.state = {
+    connection: { terminalId: id, sessionId: `session-${id}`, terminal: {}, socket: { readyState: WebSocket.OPEN } },
+    terminal: { currentTab: '' },
+    clipboard: { defaultAccess: { paste: { enabled: true, textLimit: 0 } } },
+  };
+  document.querySelector('#app').__vue_app__ = {
+    config: { globalProperties: { $pinia: { state: { value: window.state } } } },
+  };
+  window.addEventListener('message', event => {
+    if (event.source !== parent || event.origin !== location.origin) return;
+    if (event.data?.name === 'CMD') {
+      parent.postMessage({ fixture: 'received', id, command: event.data.data }, location.origin);
+    } else if (event.data?.name === 'FOCUS') {
+      document.getElementById('terminal-input').focus();
+    }
+  });
+</script>

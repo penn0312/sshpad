@@ -1,0 +1,58 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  body { margin: 0; }
+  .tabs ul { display: flex; list-style: none; padding: 0; margin: 0; }
+  #winContainer { display: flex; flex-direction: column; height: calc(100vh - 45px); }
+  .content-windows { flex: 1; }
+  .window:not(.active) { display: none; }
+</style>
+<app-root ng-version="19.2.20">
+  <elements-content>
+    <div id="content">
+      <div class="tab-bar">
+        <div class="tabs"><ul></ul></div>
+      </div>
+      <div id="winContainer" class="batch-input">
+        <div class="content-windows"></div>
+        <elements-content-footer>
+          <div class="content-footer"><div class="footer-bar">Native footer</div></div>
+        </elements-content-footer>
+      </div>
+    </div>
+  </elements-content>
+</app-root>
+<script>
+  const windows = document.querySelector('.content-windows');
+  const tabs = document.querySelector('.tabs ul');
+  window.received = [];
+  window.addEventListener('message', event => {
+    if (event.origin === location.origin && event.data?.fixture === 'received') {
+      window.received.push({ ...event.data, time: performance.now() });
+    }
+  });
+  for (const id of ['A', 'B']) {
+    const tab = document.createElement('elements-content-tab');
+    tab.innerHTML = `<li id="View_${id}"><button type="button">Tab ${id}</button></li>`;
+    const terminal = document.createElement('elements-content-window');
+    terminal.innerHTML = `<div class="window" id="window-${id}"><div class="view">
+      <div class="sub-view"><elements-connector-koko><elements-iframe>
+        <iframe id="ko-${id}" src="/koko/connect/?fixture=${id}"></iframe>
+      </elements-iframe></elements-connector-koko></div></div></div>`;
+    tabs.append(tab);
+    windows.append(terminal);
+    tab.querySelector('button').addEventListener('click', () => window.activate(id));
+  }
+  window.activate = id => {
+    for (const node of [...tabs.querySelectorAll('li'), ...windows.querySelectorAll('.window')]) {
+      node.classList.toggle('active', node.id.endsWith(id));
+    }
+  };
+  window.activate('A');
+  window.split = () => {
+    const pane = document.createElement('div');
+    pane.className = 'sub-view';
+    pane.id = 'extra-pane';
+    windows.querySelector('.window.active .view').append(pane);
+  };
+</script>

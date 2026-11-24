@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>sshpad</title>
+  <link rel="stylesheet" href="options.css">
+  <script type="module" src="options.js"></script>
+</head>
+<body>
+  <main>
+    <h1>sshpad</h1>
+    <p class="tagline">JumpServer 终端上的分组快捷命令栏</p>
+    <section aria-labelledby="site-heading">
+      <h2 id="site-heading">JumpServer 站点</h2>
+      <form id="site-form">
+        <label for="origin">Luna 站点源地址</label>
+        <div class="controls">
+          <input id="origin" type="url" placeholder="https://jump.example.com" required>
+          <button type="submit">添加或授权站点</button>
+        </div>
+      </form>
+      <p id="site-status" role="status"></p>
+      <ul id="site-list"></ul>
+      <p id="site-help" class="field-help">
+        授权后打开该站点的 Luna 页面，终端底部会出现命令栏。扩展只在 Luna 页面运行，
+        不会读取其他网站。
+      </p>
+    </section>
+    <section aria-labelledby="library-heading">
+      <div class="section-header">
+        <div>
+          <h2 id="library-heading">本地命令库</h2>
+          <p id="count"></p>
+        </div>
+        <button id="add-command" type="button" disabled>添加命令</button>
+      </div>
+      <div id="library-tools" class="controls" hidden>
+        <input id="library-search" type="search" aria-label="搜索命令" placeholder="搜索名称、命令或分组">
+        <label class="checkbox"><input type="checkbox" id="collapse-groups"> 折叠分组</label>
+      </div>
+      <div id="selection-controls" class="controls" hidden>
+        <label class="checkbox"><input type="checkbox" id="select-all"> 全选命令</label>
+        <span id="selection-count" aria-live="polite"></span>
+        <button id="delete-selected" type="button" class="secondary danger" disabled>删除所选</button>
+      </div>
+      <p id="manage-status" role="status"></p>
+      <div id="empty-state" hidden>
+        <p>还没有任何快捷命令。</p>
+        <div class="controls">
+          <button id="add-first" type="button">添加第一条</button>
+          <button id="load-example" type="button" class="secondary">用示例命令库试用</button>
+        </div>
+        <p class="field-help">
+          也可以从 SecureCRT 迁移：运行 <code>python3 scripts/sync_securecrt.py</code>
+          生成 JSON，再在下面导入。
+        </p>
+      </div>
+      <div id="command-list"></div>
+    </section>
+    <section aria-labelledby="import-heading">
+      <h2 id="import-heading">导入命令库</h2>
+      <label for="file">选择命令库 JSON</label>
+      <input id="file" type="file" accept=".json,application/json">
+      <div id="preview" hidden>
+        <p id="summary"></p>
+        <div id="changes"></div>
+        <div class="controls">
+          <button id="save">确认导入</button>
+          <button id="cancel" class="secondary">取消</button>
+        </div>
+      </div>
+      <p id="import-status" role="status"></p>
+    </section>
+  </main>
+  <dialog id="site-groups-dialog" aria-labelledby="site-groups-title">
+    <form id="site-groups-form">
+      <h2 id="site-groups-title">显示分组</h2>
+      <p id="site-groups-origin"></p>
+      <label class="checkbox"><input type="checkbox" id="show-all-groups"> 显示所有分组（含以后新增）</label>
+      <fieldset id="site-groups-list"><legend>选择显示的分组</legend></fieldset>
+      <p id="site-groups-status" role="status"></p>
+      <div class="controls">
+        <button id="save-site-groups" type="submit">保存分组设置</button>
+        <button id="cancel-site-groups" type="button" class="secondary">取消</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="group-dialog" aria-labelledby="group-title">
+    <form id="group-form">
+      <h2 id="group-title">分组重命名</h2>
+      <label for="group-name">分组名称</label>
+      <input id="group-name" type="text" maxlength="1024" required>
+      <p id="group-error" role="status"></p>
+      <div class="controls">
+        <button type="submit" id="save-group">保存分组名称</button>
+        <button type="button" id="cancel-group" class="secondary">取消</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="command-dialog" aria-labelledby="command-title">
+    <form id="command-form">
+      <h2 id="command-title"></h2>
+      <label for="command-group">分组</label>
+      <select id="command-group"></select>
+      <div id="new-group-field" hidden>
+        <label for="new-group">新分组名称</label>
+        <input id="new-group" type="text" maxlength="1024">
+      </div>
+      <label for="command-name">命令名称</label>
+      <input id="command-name" type="text" maxlength="1024" required>
+      <label for="command-mode">发送模式</label>
+      <select id="command-mode">
+        <option value="auto">自动识别</option>
+        <option value="shell">单行命令</option>
+        <option value="send-string">发送字符串</option>
+      </select>
+      <label id="command-text-label" for="command-text">单行命令</label>
+      <textarea id="command-text" aria-describedby="auto-mode-help command-help send-string-help" maxlength="65536" rows="3" spellcheck="false" required></textarea>
+      <p id="auto-mode-help" class="field-help">例如 <code>git pull\n\pusername</code>，提交命令后等一秒，再提交用户名。</p>
+      <p id="command-help" class="field-help" hidden>可用 <code>pwd &amp;&amp; whoami</code> 在上一条成功后继续。像 <code>sudo git pull</code> 这样的交互命令只填写命令本身，等提示出现后在终端输入。</p>
+      <p id="send-string-help" class="field-help" hidden><code>\n</code> 或 <code>\r</code> 表示回车，<code>\p</code> 暂停一秒，<code>\\</code> 发送反斜杠。按固定时间发送。示例 <code>git pull\n\pusername</code>。</p>
+      <fieldset id="command-colors">
+        <legend>按钮颜色</legend>
+        <div id="color-choices" class="controls"></div>
+      </fieldset>
+      <p id="command-error" role="status"></p>
+      <div class="controls">
+        <button type="submit" id="save-command">保存命令</button>
+        <button type="button" id="cancel-command" class="secondary">取消</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

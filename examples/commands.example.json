@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "sourceId": "example-team",
+  "groups": [
+    {
+      "id": "shell-basics",
+      "name": "Shell basics",
+      "commands": [
+        { "id": "working-directory", "name": "Working directory", "command": "pwd" },
+        { "id": "current-user", "name": "Current user", "command": "whoami" }
+      ]
+    }
+  ]
+}
