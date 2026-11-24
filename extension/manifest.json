@@ -3,6 +3,7 @@
   "name": "sshpad",
   "version": "1.4.0",
   "description": "给 JumpServer Luna 终端加一条分组快捷命令栏，点一下就把命令发给当前 SSH 会话。",
+  "homepage_url": "https://github.com/penn0312/sshpad",
   "minimum_chrome_version": "123",
   "permissions": ["scripting", "storage"],
   "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
