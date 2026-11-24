@@ -8,10 +8,20 @@
   <script type="module" src="options.js"></script>
 </head>
 <body>
+  <div class="shell">
+    <aside class="side">
+      <div class="brand">
+        <h1>sshpad</h1>
+        <p class="tagline">JumpServer 终端上的分组快捷命令栏</p>
+      </div>
+      <nav aria-label="设置导航">
+        <a href="#sites" data-nav="sites">站点授权</a>
+        <a href="#library" data-nav="library">命令库</a>
+        <a href="#import" data-nav="import">导入与导出</a>
+      </nav>
+    </aside>
   <main>
-    <h1>sshpad</h1>
-    <p class="tagline">JumpServer 终端上的分组快捷命令栏</p>
-    <section aria-labelledby="site-heading">
+    <section id="sites" aria-labelledby="site-heading">
       <h2 id="site-heading">JumpServer 站点</h2>
       <form id="site-form">
         <label for="origin">Luna 站点源地址</label>
@@ -27,13 +37,16 @@
         不会读取其他网站。
       </p>
     </section>
-    <section aria-labelledby="library-heading">
+    <section id="library" aria-labelledby="library-heading">
       <div class="section-header">
         <div>
           <h2 id="library-heading">本地命令库</h2>
           <p id="count"></p>
         </div>
-        <button id="add-command" type="button" disabled>添加命令</button>
+        <div class="controls">
+          <button id="export-library" type="button" class="secondary" disabled>导出 JSON</button>
+          <button id="add-command" type="button" disabled>添加命令</button>
+        </div>
       </div>
       <div id="library-tools" class="controls" hidden>
         <input id="library-search" type="search" aria-label="搜索命令" placeholder="搜索名称、命令或分组">
@@ -44,7 +57,7 @@
         <span id="selection-count" aria-live="polite"></span>
         <button id="delete-selected" type="button" class="secondary danger" disabled>删除所选</button>
       </div>
-      <p id="manage-status" role="status"></p>
+      <p id="library-hint" class="field-help">拖动行首的手柄，或聚焦手柄后按 ↑ ↓，调整分组和命令在命令栏里的顺序（搜索时不可排序）。</p>
       <div id="empty-state" hidden>
         <p>还没有任何快捷命令。</p>
         <div class="controls">
@@ -58,10 +71,11 @@
       </div>
       <div id="command-list"></div>
     </section>
-    <section aria-labelledby="import-heading">
+    <section id="import" aria-labelledby="import-heading">
       <h2 id="import-heading">导入命令库</h2>
       <label for="file">选择命令库 JSON</label>
       <input id="file" type="file" accept=".json,application/json">
+      <p class="field-help">「导出 JSON」会把当前看到的全部命令（含本地修改、颜色与顺序）合成一个文件，可用于备份或迁移到另一台浏览器；在原浏览器里再次导入会作为独立来源出现。</p>
       <div id="preview" hidden>
         <p id="summary"></p>
         <div id="changes"></div>
@@ -73,6 +87,8 @@
       <p id="import-status" role="status"></p>
     </section>
   </main>
+  </div>
+  <p id="manage-status" role="status" class="toast"></p>
   <dialog id="site-groups-dialog" aria-labelledby="site-groups-title">
     <form id="site-groups-form">
       <h2 id="site-groups-title">显示分组</h2>
@@ -124,6 +140,10 @@
         <legend>按钮颜色</legend>
         <div id="color-choices" class="controls"></div>
       </fieldset>
+      <div class="preview-row" aria-hidden="true">
+        <span>命令栏预览</span>
+        <span id="command-preview" class="preview-btn" data-tone="default">命令名称</span>
+      </div>
       <p id="command-error" role="status"></p>
       <div class="controls">
         <button type="submit" id="save-command">保存命令</button>

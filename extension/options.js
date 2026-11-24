@@ -1,4 +1,4 @@
-import { commandColors, diffLibrary, libraryWithEdits, orderedSources, validateCommand, validateLibrary, validateName } from './library.js';
+import { commandColors, diffLibrary, exportLibrary, libraryWithEdits, orderedSources, validateCommand, validateLibrary, validateName } from './library.js';
 import { setupSites } from './site-settings.js';
 
 const view = id => document.getElementById(id);
@@ -16,6 +16,48 @@ async function request(message) {
   const response = await chrome.runtime.sendMessage(message);
   if (response.error) throw new Error(response.error);
   return response;
+}
+
+// Library-level feedback. A deletion also gets an Undo button next to the text
+// and keeps it for a while; everything else is a plain message.
+let sayTimer = 0;
+function say(text, undo) {
+  const node = view('manage-status');
+  clearTimeout(sayTimer);
+  node.replaceChildren();
+  if (!text) return;
+  const message = document.createElement('span');
+  message.textContent = text;
+  node.append(message);
+  if (!undo) return;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'toast-action';
+  button.textContent = '撤销';
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      showLibraries((await request({ type: 'restore', ...undo })).libraries);
+      say('已撤销。');
+    } catch (error) {
+      say(error.message);
+    }
+  });
+  node.append(button);
+  sayTimer = setTimeout(() => say(''), 10000);
+}
+
+// What an undo needs: the sources that changed, as they were, and the revision
+// each one has now so the worker can refuse if anything moved in between.
+function undoFor(previous, next) {
+  const before = {};
+  const expected = {};
+  for (const id of new Set([...Object.keys(previous), ...Object.keys(next)])) {
+    if (previous[id]?.revision === next[id]?.revision) continue;
+    before[id] = previous[id] ?? null;
+    expected[id] = next[id]?.revision ?? null;
+  }
+  return { before, expected };
 }
 
 const siteSettings = setupSites(request);
@@ -43,20 +85,101 @@ function toggleSelection(commands, checked) {
 view('select-all').addEventListener('change', event => toggleSelection(commandChecks, event.target.checked));
 view('delete-selected').addEventListener('click', async () => {
   const targets = commandChecks.filter(item => item.checkbox.checked).map(item => item.target);
-  if (!targets.length || mutating || !window.confirm(`删除所选的 ${targets.length} 条命令？`)) return;
+  if (!targets.length || mutating) return;
   mutating = true;
   updateSelection();
   try {
+    const previous = libraries;
     const result = await request({ type: 'delete-commands', targets });
     showLibraries(result.libraries);
-    view('manage-status').textContent = `已删除 ${targets.length} 条命令。`;
+    say(`已删除 ${targets.length} 条命令。`, undoFor(previous, result.libraries));
   } catch (error) {
-    view('manage-status').textContent = error.message;
+    say(error.message);
   } finally {
     mutating = false;
     updateSelection();
   }
 });
+
+// ---- Reordering ----------------------------------------------------------
+// Drag with the mouse, or focus a handle and press the arrow keys. Both move the
+// real DOM node first (instant feedback) and then persist the resulting order.
+let dragging = null;
+let sorting = false;
+let focusKey = null;
+let commitTimer = 0;
+
+async function persistOrder(message, snapshot) {
+  sorting = true;
+  try {
+    showLibraries((await request({ type: 'reorder', ...message })).libraries);
+  } catch (error) {
+    say(error.message);
+    showLibraries(libraries);
+  } finally {
+    sorting = false;
+  }
+  if (snapshot) say('顺序已保存。');
+}
+
+function makeSortable({ item, handle, siblings, ids, message }) {
+  const order = ids();
+  const commit = () => {
+    const next = ids();
+    if (next.length === order.length && next.every((id, index) => id === order[index])) return;
+    persistOrder({ ...message(), ids: next }, true);
+  };
+  handle.addEventListener('pointerdown', () => { item.draggable = true; });
+  handle.addEventListener('pointerup', () => { if (!dragging) item.draggable = false; });
+  item.addEventListener('dragstart', event => {
+    if (!item.draggable || sorting) { event.preventDefault(); return; }
+    event.stopPropagation();
+    dragging = item;
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', '');
+    requestAnimationFrame(() => item.classList.add('dragging'));
+  });
+  item.addEventListener('dragover', event => {
+    if (!dragging || dragging === item || !siblings(dragging).includes(item)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const box = item.getBoundingClientRect();
+    const after = event.clientY > box.top + box.height / 2;
+    item.parentNode.insertBefore(dragging, after ? item.nextSibling : item);
+  });
+  item.addEventListener('dragend', event => {
+    if (dragging !== item) return;
+    event.stopPropagation();
+    dragging = null;
+    item.draggable = false;
+    item.classList.remove('dragging');
+    commit();
+  });
+  handle.addEventListener('keydown', event => {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    event.preventDefault();
+    if (sorting) return;
+    const list = siblings(item);
+    const index = list.indexOf(item);
+    const target = list[index + (event.key === 'ArrowUp' ? -1 : 1)];
+    if (!target) return;
+    item.parentNode.insertBefore(item, event.key === 'ArrowUp' ? target : target.nextSibling);
+    handle.focus();
+    focusKey = handle.dataset.key;
+    clearTimeout(commitTimer);
+    commitTimer = setTimeout(commit, 350);
+  });
+}
+
+function dragHandle(label, key) {
+  const handle = document.createElement('button');
+  handle.type = 'button';
+  handle.className = 'drag-handle';
+  handle.dataset.key = key;
+  handle.title = '拖动排序，或聚焦后按 ↑ ↓';
+  handle.setAttribute('aria-label', label);
+  return handle;
+}
 
 function matchesQuery(entry, groupName) {
   if (!query) return true;
@@ -72,8 +195,9 @@ function showLibraries(next = {}) {
   commandChecks = [];
   groupChecks = [];
   const fragment = document.createDocumentFragment();
+  const groupSorters = [];
+  const rowSorters = [];
   let count = 0;
-  let shown = 0;
   for (const source of orderedSources(libraries)) {
     for (const group of libraryWithEdits(source).groups) {
       const visible = group.commands.filter(entry => matchesQuery(entry, group.name));
@@ -113,14 +237,29 @@ function showLibraries(next = {}) {
       rename.setAttribute('aria-label', `重命名分组 ${group.name}`);
       const groupTarget = { sourceId: source.library.sourceId, groupId: group.id, revision: source.revision };
       rename.addEventListener('click', () => openGroupEditor(group.name, groupTarget));
-      groupHeader.append(title, rename);
+      section.dataset.source = groupTarget.sourceId;
+      section.dataset.id = group.id;
+      if (!query) {
+        const handle = dragHandle(`拖动排序分组 ${group.name}`, `group:${groupTarget.sourceId}/${group.id}`);
+        groupHeader.append(handle, title, rename);
+        const sections = () => [...view('command-list').querySelectorAll(':scope > .command-group')]
+          .filter(node => node.dataset.source === groupTarget.sourceId);
+        groupSorters.push(() => makeSortable({
+          item: section, handle, siblings: sections,
+          ids: () => sections().map(node => node.dataset.id),
+          message: () => ({ sourceId: groupTarget.sourceId, groupId: null, revision: libraries[groupTarget.sourceId]?.revision }),
+        }));
+      } else {
+        groupHeader.append(title, rename);
+      }
       const groupCommands = [];
       groupChecks.push({ checkbox: groupCheck, commands: groupCommands });
       groupCheck.addEventListener('change', () => toggleSelection(groupCommands, groupCheck.checked));
       const list = document.createElement('ul');
-      for (const entry of group.commands) {
+      for (const entry of visible) {
         const row = document.createElement('li');
         row.className = 'command-row';
+        row.dataset.id = entry.id;
         const detail = document.createElement('div');
         detail.className = 'command-detail';
         const name = document.createElement('strong');
@@ -161,7 +300,18 @@ function showLibraries(next = {}) {
         commandChecks.push(check);
         groupCommands.push(check);
         controls.append(edit, remove);
-        row.append(checkbox, detail, controls);
+        if (query) {
+          row.append(checkbox, detail, controls);
+        } else {
+          const handle = dragHandle(`拖动排序 ${entry.name}`, `command:${groupTarget.sourceId}/${group.id}/${entry.id}`);
+          row.append(handle, checkbox, detail, controls);
+          const rowsOf = () => [...list.children];
+          rowSorters.push(() => makeSortable({
+            item: row, handle, siblings: rowsOf,
+            ids: () => rowsOf().map(node => node.dataset.id),
+            message: () => ({ sourceId: groupTarget.sourceId, groupId: group.id, revision: libraries[groupTarget.sourceId]?.revision }),
+          }));
+        }
         list.append(row);
         count += 1;
       }
@@ -176,10 +326,17 @@ function showLibraries(next = {}) {
     ? `匹配 ${count} 条 / 共 ${total} 条`
     : `当前共 ${total} 条快捷命令`;
   view('command-list').replaceChildren(fragment);
+  // Sorters read the live DOM order, so they are wired once everything is attached.
+  for (const wire of [...groupSorters, ...rowSorters]) wire();
+  if (focusKey) {
+    view('command-list').querySelector(`[data-key="${CSS.escape(focusKey)}"]`)?.focus();
+    focusKey = null;
+  }
   view('selection-controls').hidden = !total;
   view('library-tools').hidden = !total;
   view('empty-state').hidden = total > 0;
   view('add-command').disabled = false;
+  view('export-library').disabled = !total;
   updateSelection();
 }
 
@@ -208,7 +365,7 @@ view('group-form').addEventListener('submit', async event => {
     const result = await request({ type: 'rename-group', ...renaming, name });
     view('group-dialog').close();
     showLibraries(result.libraries);
-    view('manage-status').textContent = '分组名称已保存。';
+    say('分组名称已保存。');
   } catch (error) {
     view('group-error').textContent = error.message;
   } finally {
@@ -231,6 +388,36 @@ for (const [color, labelText] of Object.entries(commandColors)) {
   label.append(radio, labelText);
   view('color-choices').append(label);
 }
+
+// Live stand-in for the real bar button, so a colour or a name can be judged
+// before it is saved.
+function updatePreview() {
+  const preview = view('command-preview');
+  preview.textContent = view('command-name').value.trim() || '命令名称';
+  preview.dataset.tone = view('command-form').elements.color.value || 'default';
+}
+view('command-name').addEventListener('input', updatePreview);
+view('command-form').addEventListener('change', event => {
+  if (event.target.name === 'color') updatePreview();
+});
+
+view('export-library').addEventListener('click', () => {
+  try {
+    const library = exportLibrary(libraries);
+    const total = library.groups.reduce((sum, group) => sum + group.commands.length, 0);
+    const url = URL.createObjectURL(new Blob([JSON.stringify(library, null, 2) + '\n'], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `sshpad-commands-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    say(`已导出 ${total} 条命令。`);
+  } catch (error) {
+    say(error.message);
+  }
+});
 
 function toggleNewGroup() {
   const creatingGroup = view('command-group').value === '';
@@ -268,20 +455,22 @@ function openEditor(entry, target) {
   view('command-text').value = entry?.command ?? '';
   updateCommandMode();
   view('command-form').elements.color.value = entry?.color ?? 'default';
+  updatePreview();
   view('command-error').textContent = '';
   view('command-dialog').showModal();
   view('command-name').focus();
 }
 
 async function deleteCommand(entry, target) {
-  if (mutating || !window.confirm(`删除「${entry.name}」？`)) return;
+  if (mutating) return;
   mutating = true;
   try {
+    const previous = libraries;
     const result = await request({ type: 'change-command', ...target, remove: true });
     showLibraries(result.libraries);
-    view('manage-status').textContent = '命令已删除。';
+    say('命令已删除。', undoFor(previous, result.libraries));
   } catch (error) {
-    view('manage-status').textContent = error.message;
+    say(error.message);
   } finally {
     mutating = false;
   }
@@ -312,7 +501,7 @@ view('command-form').addEventListener('submit', async event => {
     const result = await request({ type: 'change-command', ...target, name, command, mode, groupName, color });
     view('command-dialog').close();
     showLibraries(result.libraries);
-    view('manage-status').textContent = editing ? '命令已保存。' : '命令已添加。';
+    say(editing ? '命令已保存。' : '命令已添加。');
   } catch (error) {
     view('command-error').textContent = error.message;
   } finally {
@@ -430,9 +619,9 @@ view('load-example').addEventListener('click', async () => {
   try {
     await request({ type: 'import', library: validateLibrary(EXAMPLE), revision: null });
     showLibraries((await request({ type: 'settings' })).libraries);
-    view('manage-status').textContent = '示例命令已添加，可以按需修改或删除。';
+    say('示例命令已添加，可以按需修改或删除。');
   } catch (error) {
-    view('manage-status').textContent = error.message;
+    say(error.message);
   }
 });
 
@@ -447,3 +636,23 @@ try {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.libraries) showLibraries(changes.libraries.newValue);
 });
+
+
+// Highlight the nav entry of the section nearest the top of the viewport.
+{
+  const links = [...document.querySelectorAll('nav a[data-nav]')];
+  const sections = links.map(link => view(link.dataset.nav));
+  const mark = () => {
+    let current = 0;
+    sections.forEach((section, index) => {
+      if (section.getBoundingClientRect().top <= innerHeight * 0.35) current = index;
+    });
+    links.forEach((link, index) => {
+      if (index === current) link.setAttribute('aria-current', 'true');
+      else link.removeAttribute('aria-current');
+    });
+  };
+  addEventListener('scroll', mark, { passive: true });
+  addEventListener('resize', mark);
+  mark();
+}

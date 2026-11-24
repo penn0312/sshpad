@@ -28,7 +28,7 @@ const contexts = [];
 
 async function launch(path, profile) {
   const context = await chromium.launchPersistentContext(join(scratch, profile), {
-    channel: 'chromium', headless: true, ignoreDefaultArgs: ['--disable-extensions'],
+    channel: 'chromium', headless: true, ignoreDefaultArgs: ['--disable-extensions'], colorScheme: 'dark',
     args: ['--enable-unsafe-extension-debugging'],
   });
   contexts.push(context);
@@ -499,7 +499,91 @@ try {
   await status('当前 SSH 终端已切换');
   assert.deepEqual(await received(), [['A', 'sudo git pull\r'], ['A', 'fixture-user\r'], ['A', 'sudo git pull\r']]);
 
-  console.log('Chrome MV3 fixture passed: authorization scope, import/diff, order, A/B targeting, single CR, terminal focus for interactive input, split, race, disconnect, permissions, refresh, wrapping, and manual management, bulk delete, legacy settings, independent site groups, color presets and original button labels, group renaming, unpacked extension update, and delayed Send String submissions.');
+  // ---- Reordering, undo, export and folding ----
+  const barNames = async () => (await nodes()).filter(node => node.role?.value === 'button' &&
+    String(node.name?.value).startsWith('Fixture ')).map(node => node.name.value);
+  await updatedOptions.bringToFront();
+  await updatedOptions.getByRole('button', { name: '添加命令' }).click();
+  await updatedOptions.getByLabel('分组', { exact: true }).selectOption({ label: 'Reviewed group' });
+  await updatedOptions.getByLabel('命令名称').fill('Fixture second');
+  // The editor previews the button as it will appear on the bar.
+  assert.equal(await updatedOptions.locator('#command-preview').textContent(), 'Fixture second');
+  await updatedOptions.getByRole('radio', { name: '绿色' }).check();
+  assert.equal(await updatedOptions.locator('#command-preview').getAttribute('data-tone'), 'green');
+  await updatedOptions.getByLabel('单行命令').fill('echo second');
+  await updatedOptions.getByRole('button', { name: '保存命令' }).click();
+  await updatedOptions.locator('#command-dialog').waitFor({ state: 'hidden' });
+  await page.bringToFront();
+  await until(async () => (await barNames()).includes('Fixture second'), 'New command reaches the bar');
+  const barBefore = await barNames();
+  assert.deepEqual([...barBefore].sort(), ['Fixture Send String', 'Fixture date', 'Fixture second']);
+  const secondAt = barBefore.indexOf('Fixture second');
+  assert(secondAt > 0, 'The new command is not first, so it can move up');
+  const moved = [...barBefore];
+  [moved[secondAt - 1], moved[secondAt]] = [moved[secondAt], moved[secondAt - 1]];
+
+  await updatedOptions.bringToFront();
+  const handle = updatedOptions.getByRole('button', { name: '拖动排序 Fixture second' });
+  await handle.focus();
+  await handle.press('ArrowUp');
+  await updatedOptions.getByText('顺序已保存。').waitFor();
+  await page.bringToFront();
+  await until(async () => (await barNames()).join() === moved.join(), 'Reorder reaches the bar');
+  // The saved order survives a reload of the settings page.
+  await updatedOptions.bringToFront();
+  await updatedOptions.reload();
+  const rowNames = () => updatedOptions.locator('.command-row .command-detail strong').allTextContents();
+  assert.deepEqual(await rowNames(), moved);
+
+  // Deleting no longer asks first; the toast offers Undo instead.
+  await updatedOptions.getByRole('button', { name: '删除 Fixture second' }).click();
+  await updatedOptions.getByText('命令已删除。').waitFor();
+  assert.deepEqual(await rowNames(), moved.filter(name => name !== 'Fixture second'));
+  await updatedOptions.getByRole('button', { name: '撤销' }).click();
+  await updatedOptions.getByText('已撤销。').waitFor();
+  assert.deepEqual(await rowNames(), moved);
+
+  // Export writes one importable file that keeps the order and the colour.
+  const [download] = await Promise.all([
+    updatedOptions.waitForEvent('download'),
+    updatedOptions.getByRole('button', { name: '导出 JSON' }).click(),
+  ]);
+  const exported = validateLibrary(JSON.parse(await readFile(await download.path(), 'utf8')));
+  const exportedCommands = exported.groups.flatMap(group => group.commands);
+  assert.deepEqual(exportedCommands.map(entry => entry.name), moved);
+  assert.equal(exportedCommands.find(entry => entry.name === 'Fixture second').color, 'green');
+
+  // A group folds from its label on the bar and the choice survives a reload.
+  await page.bringToFront();
+  await until(async () => (await barNames()).length === 3, 'All commands visible before folding');
+  await click('Reviewed group');
+  await until(async () => (await barNames()).length === 0, 'Folding hides the group commands');
+  await page.reload();
+  await page.locator('#winContainer > [data-sshpad]').waitFor();
+  await until(async () => (await nodes()).some(node => node.role?.value === 'button' && node.name?.value === 'Reviewed group 3'), 'Folded group persists');
+  assert.equal((await barNames()).length, 0);
+  await click('Reviewed group 3');
+  await until(async () => (await barNames()).length === 3, 'Unfolding restores the commands');
+
+  // Dark footer chrome right above the bar is adopted; light surfaces are ignored.
+  await page.evaluate(() => {
+    document.querySelector('.footer-bar').style.backgroundColor = 'rgb(18, 22, 29)';
+  });
+  // Reloading the unpacked extension while Luna is already open hot-swaps the bar
+  // in place without throwing Extension context invalidated or requiring refresh.
+  const pageErrors = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
+  await writeFile(manifestPath, JSON.stringify({ ...manifest, version: `${manifest.version}.2` }));
+  await browserCDP.send('Extensions.loadUnpacked', { path: extension });
+  await until(async () => await page.locator('[data-sshpad]').evaluate(
+    bar => getComputedStyle(bar).backgroundColor === 'rgb(18, 22, 29)'), 'Hot-reloaded bar adopts Luna footer dark colour');
+  assert.equal(await page.locator('[data-sshpad]').count(), 1, 'Only one bar remains after hot-reload');
+  const beforeHotClick = (await received()).length;
+  await click('Fixture date');
+  await until(async () => (await received()).length === beforeHotClick + 1, 'Hot-reloaded bar submits without page refresh');
+  assert.deepEqual(pageErrors, []);
+
+  console.log('Chrome MV3 fixture passed: authorization scope, import/diff, order, A/B targeting, single CR, terminal focus for interactive input, split, race, disconnect, permissions, refresh, wrapping, and manual management, bulk delete, legacy settings, independent site groups, color presets and original button labels, group renaming, unpacked extension update, live hot-reload, footer colour adoption, and delayed Send String submissions, reordering, undo, export and folding.');
 } finally {
   await Promise.allSettled(contexts.map(context => context.close()));
   for (const server of servers) server.close();

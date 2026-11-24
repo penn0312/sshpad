@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { buildCatalog, emptyText, filterCatalog, statusText } from '../extension/catalog.js';
+import { applyOrder, exportLibrary, libraryWithEdits, validateLibrary } from '../extension/library.js';
 import { credentialHint, hasCredential, redactCommand } from '../extension/sensitive.js';
 
 const sources = [
@@ -81,4 +82,43 @@ for (const command of flagged) {
 }
 for (const command of quiet) assert.equal(redactCommand(command), command);
 
-console.log('Unit checks passed: catalog, filtering, status, empty states, credential detection and redaction.');
+// Saved order wins; unseen items keep their place after the placed ones.
+const items = ['a', 'b', 'c', 'd'].map(id => ({ id }));
+assert.deepEqual(applyOrder(items, ['c', 'a']).map(item => item.id), ['c', 'a', 'b', 'd']);
+assert.deepEqual(applyOrder(items, ['d', 'ghost', 'b', 'c', 'a']).map(item => item.id), ['d', 'b', 'c', 'a']);
+assert.equal(applyOrder(items, undefined), items);
+
+const base = {
+  library: { version: 1, sourceId: 'ops', groups: [
+    { id: 'g1', name: 'One', commands: [{ id: 'a', name: 'A', command: 'a' }, { id: 'b', name: 'B', command: 'b' }] },
+    { id: 'g2', name: 'Two', commands: [{ id: 'c', name: 'C', command: 'c', color: 'blue' }] },
+  ] },
+  revision: 'r1',
+};
+const ordered = libraryWithEdits({ ...base, order: { groups: ['g2', 'g1'], commands: { g1: ['b', 'a'] } } });
+assert.deepEqual(ordered.groups.map(group => group.id), ['g2', 'g1']);
+assert.deepEqual(ordered.groups[1].commands.map(entry => entry.id), ['b', 'a']);
+// Order survives edits and unrelated groups are untouched.
+const edited = libraryWithEdits({
+  ...base, order: { commands: { g1: ['b', 'a'] } },
+  edits: { a: { groupId: 'g1', groupName: 'One', entry: { id: 'a', name: 'A2', command: 'a2' } } },
+});
+assert.deepEqual(edited.groups[0].commands.map(entry => entry.name), ['B', 'A2']);
+
+// Export: one importable file with edits, colours and order applied, and ids kept unique across sources.
+const colliding2 = {
+  ops: { ...base, order: { groups: ['g2', 'g1'] }, colors: { a: 'green' } },
+  local: { library: { version: 1, sourceId: 'local', groups: [] }, revision: 'r2',
+    edits: { a: { groupId: 'g1', groupName: 'Mine', entry: { id: 'a', name: 'Mine', command: 'echo mine', mode: 'shell' }, imported: false } } },
+};
+const exported = exportLibrary(colliding2);
+assert.deepEqual(exported.groups.map(group => group.name), ['Two', 'One', 'Mine']);
+assert.equal(new Set(exported.groups.map(group => group.id)).size, 3);
+assert.equal(new Set(exported.groups.flatMap(group => group.commands.map(entry => entry.id))).size, 4);
+assert.equal(exported.groups[1].commands[0].color, 'green');
+assert.equal(exported.groups[2].commands[0].mode, 'shell');
+// The exported file passes the same validation as any import.
+assert.deepEqual(validateLibrary(JSON.parse(JSON.stringify(exported))), exported);
+assert.deepEqual(exportLibrary({}).groups, []);
+
+console.log('Unit checks passed: catalog, filtering, status, empty states, credential detection and redaction, ordering and export.');

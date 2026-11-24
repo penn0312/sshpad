@@ -74,7 +74,16 @@ export function orderedSources(libraries) {
   return local ? [...Object.values(imported), local] : Object.values(imported);
 }
 
-export function libraryWithEdits({ library, edits = {}, groupNames = {}, colors = {} }) {
+// Saved order wins; anything the saved order has not seen yet (new imports, new
+// commands) keeps its natural order after the ones the user placed.
+export function applyOrder(items, ids) {
+  if (!Array.isArray(ids) || !ids.length) return items;
+  const rank = new Map(ids.map((id, index) => [id, index]));
+  const placed = items.filter(item => rank.has(item.id)).sort((a, b) => rank.get(a.id) - rank.get(b.id));
+  return [...placed, ...items.filter(item => !rank.has(item.id))];
+}
+
+export function libraryWithEdits({ library, edits = {}, groupNames = {}, colors = {}, order = {} }) {
   const groups = new Map(library.groups.map(group => [group.id, {
     ...group,
     commands: new Map(group.commands.map(entry => [entry.id, entry])),
@@ -90,15 +99,44 @@ export function libraryWithEdits({ library, edits = {}, groupNames = {}, colors 
     if (entry) group.commands.set(id, entry);
     else group?.commands.delete(id);
   }
-  return {
-    ...library,
-    groups: [...groups.values()].filter(group => group.commands.size).map(group => ({
-      ...group,
-      name: Object.hasOwn(groupNames, group.id) ? groupNames[group.id] : group.name,
-      commands: [...group.commands.values()].map(entry => Object.hasOwn(colors, entry.id) ?
-        { ...entry, color: colors[entry.id] } : entry),
-    })),
+  const ordered = [...groups.values()].filter(group => group.commands.size).map(group => ({
+    ...group,
+    name: Object.hasOwn(groupNames, group.id) ? groupNames[group.id] : group.name,
+    commands: applyOrder([...group.commands.values()].map(entry => Object.hasOwn(colors, entry.id) ?
+      { ...entry, color: colors[entry.id] } : entry), order.commands?.[group.id]),
+  }));
+  return { ...library, groups: applyOrder(ordered, order.groups) };
+}
+
+// One importable file holding every command the user currently sees, with local
+// edits, colours and ordering applied. Ids that collide across sources are
+// namespaced so the file passes the same validation as any other import.
+export function exportLibrary(libraries, sourceId = 'sshpad-export') {
+  const groupIds = new Set();
+  const commandIds = new Set();
+  const unique = (used, base) => {
+    let id = base.slice(0, 80);
+    for (let n = 2; used.has(id); n++) id = `${base.slice(0, 70)}-${n}`;
+    used.add(id);
+    return id;
   };
+  const groups = [];
+  for (const source of orderedSources(libraries)) {
+    for (const group of libraryWithEdits(source).groups) {
+      const prefix = groupIds.has(group.id) ? `${source.library.sourceId}-${group.id}` : group.id;
+      groups.push({
+        id: unique(groupIds, prefix),
+        name: group.name,
+        commands: group.commands.map(entry => {
+          const clean = { id: unique(commandIds, entry.id), name: entry.name, command: entry.command };
+          if (entry.mode === 'send-string' || entry.mode === 'shell') clean.mode = entry.mode;
+          if (entry.color && entry.color !== 'default') clean.color = entry.color;
+          return clean;
+        }),
+      });
+    }
+  }
+  return validateLibrary({ version: 1, sourceId, groups });
 }
 
 export function diffLibrary(previous, next) {

@@ -57,9 +57,38 @@ async function syncBarRegistration(sites) {
   return matches;
 }
 
-function restoreBarRegistration() {
+// Re-attaches the probe and the bar to Luna tabs that are already open, so an
+// extension reload or a newly authorized site does not force a page refresh
+// (which would drop live JumpServer SSH sessions).
+async function attachOpenTabs(sites) {
+  if (!sites.length) return;
+  const tabs = await chrome.tabs.query({});
+  await Promise.all(tabs.map(async tab => {
+    if (tab.id === undefined || !tab.url) return;
+    let url;
+    try { url = new URL(tab.url); } catch { return; }
+    if (!/(^|\/)luna(?:\/|$)/.test(url.pathname)) return;
+    const site = sites.find(item => item.origin === url.origin);
+    if (!site || !await hasPermission(site)) return;
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: 'MAIN',
+      files: ['probe.js'],
+    }).catch(() => {});
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ['bar.js'],
+    }).catch(() => {});
+  }));
+}
+
+function restoreBarRegistration(reattach = false) {
   // Chrome can clear dynamic scripts when an unpacked extension is reloaded.
-  serialize(async () => syncBarRegistration(await readSites())).catch(error => {
+  serialize(async () => {
+    const sites = await readSites();
+    await syncBarRegistration(sites);
+    if (reattach) await attachOpenTabs(sites);
+  }).catch(error => {
     console.warn('Unable to restore Luna content script registration.', error);
   });
 }
@@ -88,6 +117,8 @@ async function updateSite(message) {
   await chrome.storage.local.set({ sites: next });
   if (removing && previous && !next.some(item => item.permission === previous.permission)) {
     await chrome.permissions.remove({ origins: [previous.permission] });
+  } else if (!removing) {
+    await attachOpenTabs([site]);
   }
   return { sites: next };
 }
@@ -111,7 +142,12 @@ function decorate(catalog) {
 }
 
 const localSource = { library: { version: 1, sourceId: 'local', groups: [] }, revision: null };
-const newId = () => crypto.randomUUID().replaceAll('-', '');
+// Lexicographically monotonic so chrome.storage.local's sorted object keys keep
+// newly created groups and commands in exact creation order.
+let idSeq = 0;
+const newId = () => Date.now().toString(36).padStart(10, '0') +
+  (idSeq = (idSeq + 1) % 1679616).toString(36).padStart(4, '0') +
+  crypto.randomUUID().replaceAll('-', '').slice(0, 12);
 
 function changeEntry(change, { previous, groups, edits, colors }) {
   const { sourceId, groupId, id, remove } = change;
@@ -192,11 +228,57 @@ async function renameGroup({ sourceId, groupId, revision, name }) {
   return { libraries };
 }
 
+// Persists a drag or keyboard reorder. `ids` must be exactly the current group
+// ids (groupId === null) or the current command ids of one group, so a stale
+// page can never drop or resurrect entries by reordering.
+async function reorder({ sourceId, groupId = null, revision, ids }) {
+  if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string') || new Set(ids).size !== ids.length) {
+    throw new Error('排序无效。');
+  }
+  const { libraries = {} } = await chrome.storage.local.get('libraries');
+  const source = Object.hasOwn(libraries, sourceId) ? libraries[sourceId] : undefined;
+  if (!source || source.revision !== revision) throw new Error('命令库已更新，请重新排序。');
+  const groups = libraryWithEdits(source).groups;
+  const current = groupId === null ? groups.map(group => group.id) :
+    groups.find(group => group.id === groupId)?.commands.map(entry => entry.id);
+  if (!current || current.length !== ids.length || current.some(id => !ids.includes(id))) {
+    throw new Error('此分组已更新，请重新排序。');
+  }
+  const order = { ...source.order, commands: { ...source.order?.commands } };
+  if (groupId === null) order.groups = ids;
+  else order.commands[groupId] = ids;
+  libraries[sourceId] = { ...source, order, revision: crypto.randomUUID() };
+  await chrome.storage.local.set({ libraries });
+  return { libraries };
+}
+
+// Undo for deletions. `before` holds the touched sources as they were (null when
+// the source did not exist) and `expected` their revisions right after the
+// change; if anything moved since, the undo is refused instead of clobbering it.
+async function restoreSources({ before, expected }) {
+  const plain = value => value && typeof value === 'object' && !Array.isArray(value);
+  if (!plain(before) || !plain(expected)) throw new Error('无法撤销。');
+  const { libraries = {} } = await chrome.storage.local.get('libraries');
+  for (const [id, revision] of Object.entries(expected)) {
+    const current = Object.hasOwn(libraries, id) ? libraries[id] : undefined;
+    if ((current?.revision ?? null) !== revision) throw new Error('命令库已更新，无法撤销。');
+  }
+  for (const [id, source] of Object.entries(before)) {
+    if (source === null) delete libraries[id];
+    else if (plain(source) && plain(source.library)) libraries[id] = { ...source, revision: crypto.randomUUID() };
+    else throw new Error('无法撤销。');
+  }
+  await chrome.storage.local.set({ libraries });
+  return { libraries };
+}
+
 async function optionsMessage(message) {
   if (message.type === 'settings') {
     const [sites, data] = await Promise.all([readSites(), chrome.storage.local.get('libraries')]);
     return { sites, ...data };
   }
+  if (message.type === 'reorder') return serialize(() => reorder(message));
+  if (message.type === 'restore') return serialize(() => restoreSources(message));
   if (message.type === 'rename-group') return serialize(() => renameGroup(message));
   if (message.type === 'change-command') return serialize(() => changeCommands([message]));
   if (message.type === 'delete-commands' && Array.isArray(message.targets) && message.targets.length) {
@@ -341,7 +423,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   schedulePush();
 });
 
-chrome.runtime.onInstalled.addListener(restoreBarRegistration);
-chrome.runtime.onStartup.addListener(restoreBarRegistration);
-chrome.permissions.onRemoved.addListener(restoreBarRegistration);
+chrome.runtime.onInstalled.addListener(() => restoreBarRegistration(true));
+chrome.runtime.onStartup.addListener(() => restoreBarRegistration(false));
+chrome.permissions.onRemoved.addListener(() => restoreBarRegistration(false));
 chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());

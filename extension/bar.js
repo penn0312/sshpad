@@ -1,7 +1,7 @@
 // Injected into Luna as a dynamically registered content script.
 // Deliberately plain: MV3 content scripts are not modules, so this file must
-// stay import-free. Pure view logic (catalog.js, sensitive.js) is inlined by
-// the worker before injection so the bar has no imports at all.
+// stay import-free. The few view rules it shares with catalog.js (filtering)
+// are mirrored here; the worker computes everything else the bar needs.
 (() => {
   const host = document.createElement('aside');
   host.dataset.sshpad = '';
@@ -12,20 +12,36 @@
   const sheet = new CSSStyleSheet();
   sheet.replaceSync(`
     :host {
-      all: initial; display: block; flex: 0 0 auto; min-width: 0;
-      color-scheme: dark; color: #e6edf6; background: #172332;
-      border-top: 1px solid #3c4e65; font: 12px/1.4 system-ui, -apple-system, sans-serif;
+      all: initial; display: block; flex: 0 0 auto; min-width: 0; position: relative;
+      color-scheme: dark;
+      /* Design tokens. Luna's terminal chrome is near-black; --bg also adopts
+         Luna's adjacent footer colour at runtime when it is an opaque dark tone. */
+      --bg: #141920;
+      --sunken: #0e1218;
+      --line: #2a3442;
+      --line-soft: #232c38;
+      --text: #e6edf6;
+      --muted: #8fa2b8;
+      --btn: #212a36;
+      --btn-line: #3d4d61;
+      --accent: #6aa4ee;
+      --danger: #ff9ca0;
+      --warn: #e0a34a;
+      --ok: #7fb98f;
+      --busy: #9fc6f5;
+      color: var(--text); background: var(--bg);
+      border-top: 1px solid var(--line); font: 12px/1.4 system-ui, -apple-system, sans-serif;
     }
     :host([data-floating]) { position: fixed; bottom: 0; inset-inline: 0; z-index: 1000; }
+    [hidden] { display: none !important; }
 
     .search {
       flex: 0 1 170px; min-width: 0; font: inherit; color: inherit;
-      padding: 2px 7px; border-radius: 4px; border: 1px solid #2c3d50;
-      background: #111c28; -webkit-appearance: none; appearance: none;
+      padding: 2px 7px; border-radius: 4px; border: 1px solid var(--line-soft);
+      background: var(--sunken); -webkit-appearance: none; appearance: none;
     }
-    .search:focus { border-color: #6aa4ee; }
-    .search:focus-visible, button:focus-visible { outline: 2px solid #6aa4ee; outline-offset: 1px; }
-    .search:placeholder-shown { border-color: #2c3d50; }
+    .search:focus { border-color: var(--accent); }
+    .search:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
     .bar { display: flex; align-items: flex-start; gap: 4px; }
     .groups {
@@ -40,33 +56,70 @@
        artefact rather than as structure. */
     .group-start {
       display: inline-flex; align-items: center; max-width: 100%; min-width: 0;
-      margin-inline-start: 12px;
+      margin-inline-start: 12px; gap: 4px;
     }
     .group:first-child > .group-start { margin-inline-start: 0; }
-    .label { flex: 0 1 auto; max-width: 11em; color: #8fa9c6;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .command { max-width: 100%; min-width: 0; }
 
     button {
-      font: inherit; padding: 3px 8px; color: inherit; cursor: pointer;
-      border: 1px solid #526881; background: #27384c; border-radius: 4px;
+      font: inherit; padding: 3px 8px; color: inherit; cursor: pointer; position: relative;
+      border: 1px solid var(--btn-line); background: var(--btn); border-radius: 4px;
       white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+      transition: filter .12s, border-color .12s, box-shadow .12s;
     }
+    /* Colour presets. The dark values are the original palette. */
     button[data-color="blue"] { --button-bg: #184575; --button-border: #669de6; }
     button[data-color="green"] { --button-bg: #124c3c; --button-border: #63cba0; }
     button[data-color="amber"] { --button-bg: #513916; --button-border: #efbd68; }
     button[data-color="purple"] { --button-bg: #43285f; --button-border: #ba99e8; }
-    button[data-color="red"] { --button-bg: #7d222b; --button-border: #ff9ca0; color: #fff3f4; }
-    button[data-color] { background: var(--button-bg, #27384c); border-color: var(--button-border, #526881); }
-    button:enabled:hover { filter: brightness(1.22); }
+    button[data-color="red"] { --button-bg: #7d222b; --button-border: #ff9ca0; --button-fg: #fff3f4; }
+    button[data-color] { background: var(--button-bg, var(--btn)); border-color: var(--button-border, var(--btn-line)); color: var(--button-fg, inherit); }
+    button:enabled:hover { filter: brightness(1.12) saturate(1.1); }
     button:disabled { opacity: .5; cursor: default; }
-    button.armed { border-color: #ff9ca0; box-shadow: inset 0 0 0 1px #ff9ca0; }
-    .settings { flex: none; }
-    /* A left accent rather than a glyph: even a pseudo-element's text joins the
+
+    /* Left accent rather than a glyph: even a pseudo-element's text joins the
        accessible name, which would corrupt the button label. */
-    button[data-credential] {
-      box-shadow: inset 2px 0 0 #e0a34a;
-      padding-inline-start: 7px;
+    button[data-credential] { box-shadow: inset 2px 0 0 var(--warn); padding-inline-start: 7px; }
+
+    /* A credential shortcut asks for a second click: pulse the ring and drain a
+       bar along the bottom edge so the 4 second window is visible. */
+    button.armed { border-color: var(--danger); box-shadow: 0 0 0 2px var(--danger); animation: pulse .9s ease-in-out infinite; }
+    button.armed::after {
+      content: ''; position: absolute; left: 0; bottom: 0; height: 2px; width: 100%;
+      background: var(--danger); transform-origin: left; animation: drain 4s linear forwards;
+    }
+    /* Send feedback without touching the label: success flashes green, a refusal
+       shakes. Neither changes the button's text or size. */
+    button[data-result="ok"] { animation: sent .8s ease-out; }
+    button[data-result="error"] { animation: shake .35s ease-in-out; }
+    @keyframes pulse { 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--danger) 45%, transparent); } }
+    @keyframes drain { to { transform: scaleX(0); } }
+    @keyframes sent {
+      0% { box-shadow: 0 0 0 0 var(--ok); border-color: var(--ok); }
+      30% { box-shadow: 0 0 0 3px var(--ok); border-color: var(--ok); }
+      100% { box-shadow: 0 0 0 0 transparent; }
+    }
+    @keyframes shake { 20%, 60% { translate: -2px 0; } 40%, 80% { translate: 2px 0; } }
+    @media (prefers-reduced-motion: reduce) {
+      button.armed, button.armed::after, button[data-result] { animation: none; }
+      button.armed::after { transform: none; }
+    }
+
+    /* Group label doubles as the fold toggle. */
+    .label {
+      flex: 0 1 auto; max-width: 11em; padding: 3px 4px; color: var(--muted);
+      border: 0; background: none; display: inline-flex; align-items: center; gap: 4px;
+    }
+    .label:enabled:hover { color: var(--text); filter: none; }
+    .label::before {
+      content: ''; flex: none; width: 0; height: 0;
+      border: 4px solid transparent; border-top-color: currentColor; border-bottom-width: 0;
+      transition: rotate .12s;
+    }
+    .label[aria-expanded="false"]::before { rotate: -90deg; }
+    .count {
+      flex: none; font-size: 10px; padding: 0 5px; border-radius: 8px;
+      border: 1px solid var(--line); color: var(--muted);
     }
 
     /* Compact by design: the bar is terminal chrome, so the search and settings
@@ -77,20 +130,31 @@
       flex: 0 0 auto; padding: 4px 8px 5px 4px;
     }
     .icon {
-      font: inherit; padding: 3px 6px; line-height: 1;
-      border: 1px solid #2c3d50; background: #1b2837; color: #8fa9c6;
+      display: inline-flex; align-items: center; justify-content: center;
+      padding: 3px 5px; line-height: 1;
+      border: 1px solid var(--line-soft); background: var(--sunken); color: var(--muted);
     }
-    .icon:hover { color: #e6edf6; }
-    /* The field only exists while filtering; otherwise it is a 26px affordance. */
+    .icon svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .icon:hover { color: var(--text); }
+    /* The field only exists while filtering; otherwise it is a small affordance. */
     .search { display: none; }
     .tools[data-open] .search { display: block; flex: 1 1 190px; }
-    .tools[data-open] .icon { display: none; }
-    .status { padding: 0 8px 4px; color: #f2d399;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tools[data-open] .icon[data-role="search"] { display: none; }
+
+    /* The status floats over the terminal's edge instead of taking a row, so a
+       message appearing or clearing never moves the terminal. */
+    .status {
+      position: absolute; bottom: calc(100% + 6px); inset-inline-start: 8px;
+      max-width: calc(100% - 16px); box-sizing: border-box; padding: 4px 10px;
+      border-radius: 6px; border: 1px solid var(--line); border-inline-start-width: 3px;
+      background: var(--bg); color: var(--text); box-shadow: 0 4px 14px rgb(0 0 0 / .25);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none;
+    }
     .status:empty { display: none; }
-    .status[data-level="error"]::before { content: '⚠  '; }
-    .status[data-level="busy"] { color: #9fc6f5; }
-    .status[data-level="ok"] { color: #7fb98f; }
+    .status[data-level="error"] { border-color: var(--warn); color: var(--warn); }
+    .status[data-level="busy"] { border-color: var(--busy); color: var(--busy); }
+    .status[data-level="ok"] { border-color: var(--ok); color: var(--ok); }
+    .status[data-level="idle"] { color: var(--muted); }
 
     @media (max-width: 560px) {
       .bar { flex-wrap: wrap; }
@@ -99,6 +163,24 @@
     }
   `);
   shadow.adoptedStyleSheets = [sheet];
+
+  const SVG = 'http://www.w3.org/2000/svg';
+  function icon(parts) {
+    const svg = document.createElementNS(SVG, 'svg');
+    svg.setAttribute('viewBox', '0 0 16 16');
+    svg.setAttribute('aria-hidden', 'true');
+    for (const [tag, attributes] of parts) {
+      const node = document.createElementNS(SVG, tag);
+      for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, value);
+      svg.append(node);
+    }
+    return svg;
+  }
+  const SEARCH_ICON = [['circle', { cx: 7, cy: 7, r: 4.5 }], ['path', { d: 'M10.5 10.5 14 14' }]];
+  const SETTINGS_ICON = [
+    ['path', { d: 'M2 4.5h6M12 4.5h2M2 11.5h2M8 11.5h6' }],
+    ['circle', { cx: 10, cy: 4.5, r: 1.8 }], ['circle', { cx: 6, cy: 11.5, r: 1.8 }],
+  ];
 
   const tools = document.createElement('span');
   tools.className = 'tools';
@@ -111,7 +193,8 @@
   const searchToggle = document.createElement('button');
   searchToggle.type = 'button';
   searchToggle.className = 'icon';
-  searchToggle.textContent = '/';
+  searchToggle.dataset.role = 'search';
+  searchToggle.append(icon(SEARCH_ICON));
   searchToggle.title = '筛选命令（快捷键 /）';
   searchToggle.setAttribute('aria-label', '筛选快捷命令');
   const openSearch = () => {
@@ -131,16 +214,12 @@
   const settings = document.createElement('button');
   settings.type = 'button';
   settings.className = 'icon';
-  settings.textContent = '\u2699';
+  settings.append(icon(SETTINGS_ICON));
   settings.title = '命令库设置';
   settings.setAttribute('aria-label', '命令库设置');
 
   const groupArea = document.createElement('div');
   groupArea.className = 'groups';
-
-  // The reserved strip must track the real width of the tools, whatever the UI
-  // language or zoom level turns out to be.
-
 
   tools.append(settings);
 
@@ -166,11 +245,18 @@
   let armed = null;
   let armedTimer = 0;
   let catalogTimer = 0;
-  // An error that vanishes in 80ms is the same as no error at all. Probe
-  // updates keep arriving, so feedback owns a minimum display time.
-  let feedbackUntil = 0;
-
   let feedbackTimer = 0;
+
+  // Folded groups survive reloads. Only opaque group ids are stored, in the
+  // page's own localStorage, so nothing sensitive is exposed to the page.
+  const FOLD_KEY = 'sshpad:folded';
+  const folded = new Set();
+  try {
+    for (const id of JSON.parse(localStorage.getItem(FOLD_KEY) || '[]')) folded.add(String(id));
+  } catch { /* storage may be blocked; folding then lasts for the page only */ }
+  function saveFolded() {
+    try { localStorage.setItem(FOLD_KEY, JSON.stringify([...folded])); } catch { /* ignore */ }
+  }
 
   // The probe only posts on change, so expiry cannot be lazy: it needs its own
   // timer, otherwise a stale message sits on screen until the next event.
@@ -184,10 +270,6 @@
       feedback = '';
       paintStatus();
     }, holdMs);
-  }
-
-  function expireFeedback() {
-    // A newer state does not cancel a message the user has not read yet.
   }
 
   // Where the bar docks. Tried in order; the last resort is fixed positioning on
@@ -207,9 +289,86 @@
     return null;
   }
 
-  const send = message => Promise.resolve(chrome.runtime.sendMessage(message))
-    .then(response => response || { reason: '扩展暂不可用。' },
-      () => ({ reason: '扩展暂不可用，请刷新 Luna 页面。' }));
+  function parseRgb(value) {
+    const match = /^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)(?:[,/\s]+([\d.]+))?\s*\)$/.exec(value || '');
+    if (!match) return null;
+    const [, r, g, b, a = '1'] = match;
+    return { r: Number(r), g: Number(g), b: Number(b), a: Number(a) };
+  }
+
+  // Match Luna's own footer bar right above us when it paints an opaque dark
+  // surface; otherwise keep the built-in near-black terminal palette.
+  function syncChromeColor() {
+    const prev = host.previousElementSibling;
+    const candidates = [
+      prev?.querySelector?.('.footer-bar'),
+      prev?.querySelector?.('.content-footer'),
+      prev,
+      host.parentElement,
+    ];
+    for (const node of candidates) {
+      if (!node) continue;
+      const rgb = parseRgb(getComputedStyle(node).backgroundColor);
+      if (!rgb || rgb.a < 0.95) continue;
+      if (rgb.r <= 56 && rgb.g <= 64 && rgb.b <= 76) {
+        host.style.setProperty('--bg', `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`);
+        return;
+      }
+    }
+    host.style.removeProperty('--bg');
+  }
+
+  const life = new AbortController();
+
+  // Accessing chrome.runtime.id itself can throw synchronously once Chrome
+  // invalidates an old content-script context, so keep it behind its own guard.
+  function contextAlive() {
+    try {
+      return Boolean(chrome?.runtime?.id);
+    } catch {
+      return false;
+    }
+  }
+
+  function stop() {
+    detached = true;
+    life.abort();
+    if (catalogTimer) { clearTimeout(catalogTimer); catalogTimer = 0; }
+    if (feedbackTimer) { clearTimeout(feedbackTimer); feedbackTimer = 0; }
+    disarm();
+  }
+
+  // After the extension is reloaded or updated, an older instance in the page
+  // either gets superseded by the newly injected bar or stops cleanly here.
+  let orphaned = false;
+  function orphan() {
+    if (orphaned) return;
+    orphaned = true;
+    stop();
+    status = { reason: '扩展已更新或重新加载，请刷新 Luna 页面。' };
+    feedback = '';
+    paintRows();
+    paintStatus();
+  }
+
+  const send = async message => {
+    if (orphaned) return { reason: '扩展已更新或重新加载，请刷新 Luna 页面。' };
+    if (!contextAlive()) {
+      orphan();
+      return { reason: '扩展已更新或重新加载，请刷新 Luna 页面。' };
+    }
+    try {
+      return (await chrome.runtime.sendMessage(message)) || { reason: '扩展暂不可用。' };
+    } catch (error) {
+      const dead = !contextAlive() || /context invalidated/i.test(String(error?.message ?? error));
+      if (dead) {
+        orphan();
+        return { reason: '扩展已更新或重新加载，请刷新 Luna 页面。' };
+      }
+      return { reason: '扩展暂不可用，请刷新 Luna 页面。' };
+    }
+  };
+
 
   function emptyFor() {
     if (search.value.trim()) return filtered.total ? '' : '没有匹配的命令。';
@@ -254,16 +413,34 @@
   function render() {
     const scroll = groupArea.scrollTop;
     const fragment = document.createDocumentFragment();
+    const filtering = Boolean(search.value.trim());
     rows = [];
     for (const group of filtered.groups) {
+      const fold = !filtering && folded.has(group.id);
       const section = document.createElement('div');
       section.className = 'group';
       section.setAttribute('role', 'group');
       section.setAttribute('aria-label', group.name);
-      const label = document.createElement('span');
+      const label = document.createElement('button');
+      label.type = 'button';
       label.className = 'label';
-      label.textContent = group.name;
-      label.title = group.name;
+      label.setAttribute('aria-expanded', String(!fold));
+      label.title = filtering ? group.name : group.name + (fold ? '（点击展开）' : '（点击折叠）');
+      label.append(group.name);
+      if (fold) {
+        const count = document.createElement('span');
+        count.className = 'count';
+        count.textContent = String(group.commands.length);
+        label.append(count);
+      }
+      label.addEventListener('click', event => {
+        if (!event.isTrusted || filtering) return;
+        if (folded.has(group.id)) folded.delete(group.id);
+        else folded.add(group.id);
+        saveFolded();
+        render();
+        paintRows();
+      });
       let first = true;
       for (const entry of group.commands) {
         const button = document.createElement('button');
@@ -285,18 +462,31 @@
         cell.className = first ? 'group-start' : 'command';
         if (first) cell.append(label);
         cell.append(button);
+        cell.hidden = !first && fold;
+        if (first && fold) button.hidden = true;
         section.append(cell);
         first = false;
-        rows.push({
-          button,
-          length: entry.inputLength || Array.from(entry.command).length + 1,
-          entry,
-        });
+        // A folded button leaves the accessibility tree and the tab order, so it
+        // must also stay out of the rows that paintRows() enables.
+        if (!fold) {
+          rows.push({
+            button,
+            length: entry.inputLength || Array.from(entry.command).length + 1,
+            entry,
+          });
+        }
       }
       fragment.append(section);
     }
     groupArea.replaceChildren(fragment);
     groupArea.scrollTop = scroll;
+  }
+
+  // Result flash on the button that was clicked. It is cosmetic only and goes
+  // away by itself; a rebuilt button simply loses it.
+  function flash(button, result) {
+    button.dataset.result = result;
+    setTimeout(() => { if (button.dataset.result === result) delete button.dataset.result; }, 900);
   }
 
   async function onClick(entry, button, danger) {
@@ -325,8 +515,11 @@
     } finally {
       executing = false;
     }
-    // Hold a refusal long enough to read; a success stays silent.
+    if (detached) return;
+    // Hold a refusal long enough to read; a success stays silent in the status
+    // line and shows as a short flash on the button instead.
     setFeedback(result.reason || '', result.reason ? 2500 : 0);
+    if (button.isConnected) flash(button, result.reason ? 'error' : 'ok');
     paintStatus();
     paintRows();
     setTimeout(sync, 120);
@@ -361,6 +554,7 @@
   async function sync() {
     if (detached) return;
     const next = await send({ type: 'status', knownRevision: revisionKey });
+    if (detached) return;
     if (next.unauthorized || !/(^|\/)luna(?:\/|$)/.test(location.pathname)) {
       host.remove();
       return;
@@ -377,11 +571,20 @@
     host.toggleAttribute('data-floating', !container);
     const parent = container || document.body;
     if (host.parentNode !== parent) parent.append(host);
-    expireFeedback();
+    syncChromeColor();
     status = Object.assign({}, status, next);
     paintRows();
     paintStatus();
   }
+
+  // Tear down any previous bar instance before attaching our own listeners, so
+  // hot-reloading the extension swaps the bar in place without a page refresh.
+  document.dispatchEvent(new CustomEvent('sshpad:supersede'));
+  for (const stale of document.querySelectorAll('aside[data-sshpad]')) stale.remove();
+  document.addEventListener('sshpad:supersede', () => {
+    stop();
+    host.remove();
+  }, { signal: life.signal });
 
   // The MAIN-world probe posts state straight from the page, so the bar reacts
   // without asking the worker anything. Sending still goes through the worker.
@@ -396,7 +599,6 @@
       textLimit: state.textLimit,
       reason: state.ok ? '' : state.reason,
     };
-    expireFeedback();
     const revisionKeyBefore = status.revisionKey;
     status = Object.assign({}, status, next, { revisionKey: revisionKeyBefore });
     paintRows();
@@ -404,29 +606,38 @@
     // A terminal appearing or disappearing can change which commands apply.
     if (catalogTimer) return;
     catalogTimer = setTimeout(() => { catalogTimer = 0; sync(); }, 300);
-  });
+  }, { signal: life.signal });
 
   // The worker pushes a new catalogue whenever settings or permissions change,
   // so no tab has to poll for it.
-  chrome.runtime.onMessage.addListener((message, sender, respond) => {
-    if (sender.id !== chrome.runtime.id || !message || typeof message !== 'object') return;
-    // A removed site or revoked permission detaches the page immediately
-    // instead of waiting for the next user interaction.
-    if (message.type === 'detach') {
-      detached = true;
-      host.remove();
-      return;
-    }
-    if (message.type !== 'catalog') return;
-    loading = false;
-    if (message.hasSites !== undefined) status.hasSites = message.hasSites;
-    if (message.catalog) {
-      revisionKey = message.revisionKey;
-      catalog = message.catalog;
-      applyFilter();
-    }
-    respond?.({});
-  });
+  if (contextAlive()) {
+    chrome.runtime.onMessage.addListener((message, sender, respond) => {
+      if (detached) return;
+      try {
+        if (sender?.id !== chrome.runtime?.id || !message || typeof message !== 'object') return;
+      } catch {
+        orphan();
+        return;
+      }
+      // A removed site or revoked permission detaches the page immediately
+      // instead of waiting for the next user interaction.
+      if (message.type === 'detach') {
+        stop();
+        host.remove();
+        return;
+      }
+      if (message.type !== 'catalog') return;
+      loading = false;
+      if (message.hasSites !== undefined) status.hasSites = message.hasSites;
+      if (message.catalog) {
+        revisionKey = message.revisionKey;
+        status.revisionKey = message.revisionKey;
+        catalog = message.catalog;
+        applyFilter();
+      }
+      respond?.({});
+    });
+  }
 
   search.addEventListener('input', applyFilter);
   search.addEventListener('keydown', event => {
@@ -452,17 +663,21 @@
     event.preventDefault();
     openSearch();
     search.select();
-  }, true);
+  }, { capture: true, signal: life.signal });
 
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) window.postMessage({ tag: 'sshpad/sample' }, location.origin);
-  });
+  }, { signal: life.signal });
 
   if (/(^|\/)luna(?:\/|$)/.test(location.pathname)) {
-    const layout = new CSSStyleSheet();
-    // Let the terminal shrink so the bar never overlaps it.
-    layout.replaceSync(':has(> [data-sshpad]) > .content-windows { min-height: 0; }');
-    document.adoptedStyleSheets = document.adoptedStyleSheets.concat(layout);
+    if (!document.documentElement.hasAttribute('data-sshpad-layout')) {
+      document.documentElement.setAttribute('data-sshpad-layout', '');
+      const layout = new CSSStyleSheet();
+      // Let the terminal shrink so the bar never overlaps it.
+      layout.replaceSync(':has(> [data-sshpad]) > .content-windows { min-height: 0; }');
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, layout];
+    }
+    window.postMessage({ tag: 'sshpad/sample' }, location.origin);
     sync();
     setTimeout(sync, 300);
   }

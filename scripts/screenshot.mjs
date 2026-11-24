@@ -26,7 +26,7 @@ await writeFile(mp, JSON.stringify(manifest));
 
 const ctx = await chromium.launchPersistentContext(join(scratch, 'profile'), {
   channel: 'chromium', headless: true, ignoreDefaultArgs: ['--disable-extensions'],
-  args: ['--enable-unsafe-extension-debugging'], viewport: { width: 1100, height: 300 } });
+  args: ['--enable-unsafe-extension-debugging'], colorScheme: 'dark', viewport: { width: 1100, height: 300 } });
 const cdp = await ctx.browser().newBrowserCDPSession();
 const { id } = await cdp.send('Extensions.loadUnpacked', { path: extDir });
 const worker = ctx.serviceWorkers()[0] ?? await ctx.waitForEvent('serviceworker');
