@@ -10,7 +10,9 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # ubuntu-latest moved to 26.04, which no longer ships Python 3.9. Pin to the
+    # image that still has every interpreter in the matrix.
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
@@ -36,7 +38,7 @@ jobs:
           CHROME_CHANNEL: chromium
 
   package:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     needs: test
     steps:
       - uses: actions/checkout@v4
